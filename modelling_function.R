@@ -1,47 +1,69 @@
-model_handmade_folds <- function(data, horizon, dataset, lag, features, basefeatures){
+LLTO_Model <- function(data, name_of_dataset, lag, time_out_horizon, features, predictors){
+  ## Function purpose: Use Leave Location and Time Out Moddeling (LLTO) on the 
+  ## DataSets of the Kaggle ACEA Smart Water Analytics Challenge. Datasets are 
+  ## time series with multiple predictors and features. Lags are used as features.
+  ## A horizon gets specified to model the Time Out Cross validation.
   
-  #basefeatures <- 'Depth'
+  ## Function Output: Train Object
   
-  # Make lags:
-  features <- grep(features,names(data),value = T)
-  basefeatures <- grep(basefeatures,names(data),value = T)
+  ## Function input:
+  # data                Dataset from Kaggle Acea Smart Water Analytics challenge, 
+  #                     containing Date, numeric predictors & feature set
+  # name_of_dataset     Name of input dataset, used to save trained model
+  # lag                 Amount of lags used for features (integer input)
+  # time_out_horizon    Horizon of folds used in Time Out Cross validation
+  # features            Names of features used in dataset (numeric variables)
+  # predictors          Names of predictors used in dataset (numeric variables)
   
+  ## Variable formatting:
+  # Date variable:
+  data_model$Date <- as.Date(as.character(data_model$Date), format = '%d/%m/%Y')
+  
+  ## Feature addition:
+  # Creating lags for i features in j lags
   for(i in 1:length(features)){
     for(j in 1:lag){
-      data$temp <- Lag(data[,features[i],+j])
+      data$temp <- quantmod::Lag(data[,features[i],+j])
       names(data)[which(names(data)=='temp')] <- paste(features[i],j, sep = '_')
     }
   }
-  
-  
-  data <- data[,which(colMeans(!is.na(data))>.2)]
-  
   # Inlude seasonality:
-  data$year <- as.numeric(substr(data$Date,7,10))
-  data$year <- data$year - min(data$year) + 1
-  data$month <- as.numeric(substr(data$Date,4,5))
+  data$year    <- as.numeric(substr(data$Date,7,10))
+  data$year    <- data$year - min(data$year) + 1
+  data$month   <- as.numeric(substr(data$Date,4,5))
   data$quarter <- ifelse(data$month <= 3,1,
                          ifelse(data$month >=4 & data$month <= 6,2,
                                 ifelse(data$month >=7 & data$month <= 9,3,
-                                       ifelse(data$month >9,4,NA))))
+                                       ifelse(data$month >9,4,NA))))  
+  # remove uncommon newly created features:
+  data <- data[,which(colMeans(!is.na(data))>.2)]
   
-  data_long <- tidyr::pivot_longer(data, basefeatures,names_to = 'location', values_to = 'depth_to_groundwater')
+  ## Data shaping for modelling
+  # Long format by predictors for LLTO modelling:
+  data_long <- tidyr::pivot_longer(data, predictors,names_to = 'location', values_to = 'depth_to_groundwater')
   
+  ## Remove missing variables:
+  # Complete cases
   data_long <- data_long[complete.cases(data_long),]
+  
+  ## Statistical preprocessing:
+  # Remove outliers
   data_long <- data_long[which(data_long$depth_to_groundwater != 0),]
-  
-  #data_model <- data_long[,-grep('location|Date|name',names(data_long))]
-  
+  # Preprocess features for modelling
   temp <- data_long[,which(!names(data_long)%in%c('depth_to_groundwater','Date','location'))]
-  nzv <- nearZeroVar(temp)                                                       # excluding variables with very low frequencies
+  # excluding variables with very low frequencies
+  nzv <- nearZeroVar(temp)                                                       
   if(length(nzv)>0){temp <- temp[, -nzv]}
-  i <- findCorrelation(cor(temp))                                                # excluding variables that are highly correlated with others
+  # excluding variables that are highly correlated with others
+  i <- findCorrelation(cor(temp))                                               
   if(length(i) > 0) temp <- temp[, -i]
-  i <- findLinearCombos(temp)                                                    # excluding variables that are a linear combination of others
+  # excluding variables that are a linear combination of others
+  i <- findLinearCombos(temp)                                                   
   if(!is.null(i$remove)) temp <- temp[, -i$remove]
+  # Selection of final feature set
   data_model <- data_long[,c('depth_to_groundwater','Date','location', names(temp))]
   
-  data_model$Date <- as.Date(as.character(data_model$Date), format = '%d/%m/%Y')
+  ## 
   
   # Handmade indexes:
   index_hand_design <- function(data,period, location, horizon, location_one = NULL){
@@ -78,26 +100,21 @@ model_handmade_folds <- function(data, horizon, dataset, lag, features, basefeat
   
   locations <- unique(data_model$location)
   
-  for(i in 1:length(locations)){
-    for(j in 1:length(output_final)){
-      if(length(locations)==1){
-        
-        output_temp <- index_hand_design(data_model,output_final[[j]], locations[i], horizon, location_one = 'yes') 
-      } else {
-        output_temp <- index_hand_design(data_model,output_final[[j]], locations[i], horizon)
-      }
-      if(j == 1){
-        final_inner <- output_temp
-      } else {
-        final_inner <- c(final_inner, output_temp)
-      }
-    }
-    if(i == 1){
-      final <- final_inner
-    } else {
-      final <- c(final, final_inner)
-    }
+  if(length(locations)==1){
+    final_inner <- lapply(1:length(output_final), function(x){index_hand_design(data_model,
+                                                                                output_final[[x]],
+                                                                                locations, 
+                                                                                horizon,
+                                                                                location_one = 'yes')})
   }
+  if(length(locations)>1){
+    # Create dataframe with possible combinations:
+    sequences <- data.frame(location = rep(locations,length(output_final)), 
+                                           lengths = rep(1:length(output_final), length(locations)))
+    final <- mapply(index_hand_design, data = data_model, sequences[,2], sequences[,1], horizon = horizon)
+  }
+    
+  
   
   index_final <- list(index = final[seq(1, length.out = length(locations)*length(output_final), by = 2)], 
                       indexOut = final[seq(2, length.out =length(locations)*length(output_final), by = 2)])
